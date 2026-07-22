@@ -49,6 +49,12 @@ try {
   assert.equal(connected.type, "controller_connected");
   assert.match(connected.resumeToken, /^[0-9a-f-]{36}$/i);
 
+  const keepalivePromise = nextMessage(controller);
+  controller.send(JSON.stringify({ type: "keepalive" }));
+  const keepalive = JSON.parse((await keepalivePromise).data.toString());
+  assert.equal(keepalive.type, "keepalive_ack");
+  assert.equal(typeof keepalive.at, "number");
+
   const controlPromise = nextMessage(host);
   controller.send(JSON.stringify({ type: "control", action: "tap", x: 4, y: 0.75 }));
   const control = JSON.parse((await controlPromise).data.toString());

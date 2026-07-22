@@ -52,9 +52,12 @@
   let frameUrl;
   let startPoint;
   let retryTimer;
+  let keepaliveTimer;
+  let lastServerMessageAt = 0;
+  let wakeLock;
   let retryCount = 0;
   let manualClose = false;
-  let activeCode = "";
+  let activeCode = sessionStorage.getItem("phonebridge.activeCode") || "";
   let resumeToken = sessionStorage.getItem("phonebridge.resumeToken") || "";
 
   function setStatus(text) { status.textContent = text; }
@@ -93,6 +96,31 @@
     if (retryTimer) clearTimeout(retryTimer);
     retryTimer = null;
   }
+  function stopKeepalive() {
+    if (keepaliveTimer) clearInterval(keepaliveTimer);
+    keepaliveTimer = null;
+  }
+  function startKeepalive(attempt) {
+    stopKeepalive();
+    lastServerMessageAt = Date.now();
+    keepaliveTimer = setInterval(() => {
+      if (socket !== attempt || attempt.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - lastServerMessageAt > 45_000) {
+        attempt.close(4000, "keepalive timeout");
+        return;
+      }
+      attempt.send(JSON.stringify({ type: "keepalive" }));
+    }, 15_000);
+  }
+  async function keepScreenAwake() {
+    if (!("wakeLock" in navigator) || wakeLock) return;
+    try {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => { wakeLock = null; });
+    } catch {
+      wakeLock = null;
+    }
+  }
   function scheduleReconnect() {
     if (manualClose || !activeCode || retryTimer) return;
     const delay = Math.min(30_000, 1_000 * (2 ** Math.min(retryCount, 5))) + Math.floor(Math.random() * 500);
@@ -117,6 +145,7 @@
     });
     attempt.addEventListener("message", (event) => {
       if (socket !== attempt) return;
+      lastServerMessageAt = Date.now();
       if (typeof event.data !== "string") {
         if (frameUrl) URL.revokeObjectURL(frameUrl);
         frameUrl = URL.createObjectURL(event.data);
@@ -134,6 +163,8 @@
         }
         setStatus(message.resumed ? "已自动恢复连接" : "已连接，可以控制");
         setConnected(true);
+        startKeepalive(attempt);
+        keepScreenAwake();
       }
       if (message.type === "session_ended") setStatus(`会话已结束：${message.reason || "连接断开"}`);
       if (message.type === "error") {
@@ -149,11 +180,16 @@
           manualClose = true;
           resumeToken = "";
           sessionStorage.removeItem("phonebridge.resumeToken");
+          if (message.code === "invalid_code") {
+            activeCode = "";
+            sessionStorage.removeItem("phonebridge.activeCode");
+          }
         }
       }
     });
     attempt.addEventListener("close", () => {
       if (socket !== attempt) return;
+      stopKeepalive();
       connect.disabled = false;
       setConnected(false);
       scheduleReconnect();
@@ -174,8 +210,10 @@
       sessionStorage.removeItem("phonebridge.resumeToken");
     }
     activeCode = pairingCode;
+    sessionStorage.setItem("phonebridge.activeCode", activeCode);
     manualClose = false;
     retryCount = 0;
+    keepScreenAwake();
     openSocket();
   });
 
@@ -186,9 +224,13 @@
     }
   });
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && !manualClose && activeCode && socket?.readyState !== WebSocket.OPEN) {
-      clearRetry();
-      openSocket();
+    if (document.visibilityState === "visible" && !manualClose && activeCode) {
+      keepScreenAwake();
+      if (socket?.readyState !== WebSocket.OPEN || Date.now() - lastServerMessageAt > 45_000) {
+        clearRetry();
+        socket?.close();
+        openSocket();
+      }
     }
   });
   code.addEventListener("input", () => { code.value = code.value.replace(/\D/g, "").slice(0, 6); });
@@ -210,6 +252,13 @@
     else sendControl({ action: "swipe", fromX: startPoint.x, fromY: startPoint.y, toX: endPoint.x, toY: endPoint.y, durationMs: Math.round(durationMs) });
     startPoint = null;
   });
+  if (/^\d{6}$/.test(activeCode)) {
+    code.value = activeCode;
+    openSocket();
+  } else {
+    activeCode = "";
+    sessionStorage.removeItem("phonebridge.activeCode");
+  }
 </script>
 </body>
 </html>

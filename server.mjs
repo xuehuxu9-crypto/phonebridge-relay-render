@@ -9,7 +9,7 @@ const config = {
   port: numberFromEnv("PORT", 8787, 1, 65_535),
   registrationTimeoutMs: numberFromEnv("REGISTRATION_TIMEOUT_MS", 10_000, 1_000, 60_000),
   joinTimeoutMs: numberFromEnv("JOIN_TIMEOUT_MS", 60_000, 10_000, 300_000),
-  resumeGraceMs: numberFromEnv("RESUME_GRACE_MS", 300_000, 10_000, 3_600_000),
+  resumeGraceMs: numberFromEnv("RESUME_GRACE_MS", 3_600_000, 10_000, 86_400_000),
   heartbeatMs: numberFromEnv("HEARTBEAT_MS", 25_000, 5_000, 60_000),
   maxBackpressureBytes: numberFromEnv("MAX_BACKPRESSURE_BYTES", 2_000_000, 64_000, 16_000_000),
   maxFrameBytes: numberFromEnv("MAX_FRAME_BYTES", 2_097_152, 64_000, 8_000_000),
@@ -369,6 +369,10 @@ sockets.on("connection", (socket, request) => {
     }
 
     if (client.role === "controller" && client.hostInfo.approved) {
+      if (message.type === "keepalive") {
+        sendJson(socket, { type: "keepalive_ack", at: Date.now() });
+        return;
+      }
       const control = message.type === "control" ? sanitizeControl(message) : null;
       if (control) sendJson(client.hostInfo.socket, control);
     }
