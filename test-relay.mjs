@@ -11,8 +11,20 @@ const child = spawn(process.execPath, ["server.mjs"], {
 
 function nextMessage(socket) {
   return new Promise((resolve, reject) => {
-    socket.once("message", (data, isBinary) => resolve({ data, isBinary }));
-    socket.once("error", reject);
+    const cleanup = () => {
+      socket.off("message", onMessage);
+      socket.off("error", onError);
+    };
+    const onMessage = (data, isBinary) => {
+      cleanup();
+      resolve({ data, isBinary });
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+    socket.once("message", onMessage);
+    socket.once("error", onError);
   });
 }
 
@@ -86,8 +98,26 @@ try {
   assert.equal(resumed.resumed, true);
   assert.notEqual(resumed.resumeToken, connected.resumeToken);
 
-  host.close();
+  const resumedDisconnectedPromise = nextMessage(host);
   resumedController.close();
+  assert.equal(JSON.parse((await resumedDisconnectedPromise).data.toString()).type, "controller_disconnected");
+
+  const replacementController = new WebSocket("ws://127.0.0.1:18787/ws");
+  await new Promise((resolve, reject) => { replacementController.once("open", resolve); replacementController.once("error", reject); });
+  const replacementJoinPromise = nextMessage(host);
+  const replacementPendingPromise = nextMessage(replacementController);
+  replacementController.send(JSON.stringify({ type: "controller", code: ready.code, name: "Fresh Safari tab" }));
+  const replacementJoin = JSON.parse((await replacementJoinPromise).data.toString());
+  assert.equal(replacementJoin.type, "join_request");
+  assert.equal(JSON.parse((await replacementPendingPromise).data.toString()).type, "join_pending");
+  const replacementHostConnectedPromise = nextMessage(host);
+  const replacementControllerConnectedPromise = nextMessage(replacementController);
+  host.send(JSON.stringify({ type: "approve", requestId: replacementJoin.requestId, allow: true }));
+  assert.equal(JSON.parse((await replacementHostConnectedPromise).data.toString()).type, "controller_connected");
+  assert.equal(JSON.parse((await replacementControllerConnectedPromise).data.toString()).type, "controller_connected");
+
+  host.close();
+  replacementController.close();
   console.log("relay integration test passed");
 } finally {
   child.kill();

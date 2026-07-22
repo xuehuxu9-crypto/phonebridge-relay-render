@@ -319,11 +319,17 @@ sockets.on("connection", (socket, request) => {
           return;
         }
 
-        if (hostInfo.controller || hostInfo.requestId || hostInfo.resumeToken) {
+        if (hostInfo.controller || hostInfo.requestId) {
           sendJson(socket, { type: "error", code: "host_busy" });
           socket.close(1008, "host busy");
           return;
         }
+
+        // Safari can discard sessionStorage while the approved socket is gone.
+        // In that case, abandon the unreachable resume token and require a new
+        // approval on the Huawei phone instead of locking the device for the
+        // entire resume window.
+        if (hostInfo.resumeToken) clearResume(hostInfo);
 
         const requestId = randomUUID();
         const controllerName = String(message.name || "iPhone").slice(0, 40);

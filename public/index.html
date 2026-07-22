@@ -182,6 +182,7 @@
           sessionStorage.removeItem("phonebridge.resumeToken");
           if (message.code === "invalid_code") {
             activeCode = "";
+            code.value = "";
             sessionStorage.removeItem("phonebridge.activeCode");
           }
         }

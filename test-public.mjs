@@ -17,8 +17,20 @@ function openSocket() {
 
 function nextMessage(socket) {
   return new Promise((resolve, reject) => {
-    socket.once("message", (data, isBinary) => resolve({ data, isBinary }));
-    socket.once("error", reject);
+    const cleanup = () => {
+      socket.off("message", onMessage);
+      socket.off("error", onError);
+    };
+    const onMessage = (data, isBinary) => {
+      cleanup();
+      resolve({ data, isBinary });
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+    socket.once("message", onMessage);
+    socket.once("error", onError);
   });
 }
 
