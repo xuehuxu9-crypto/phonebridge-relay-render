@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#0b1020">
+  <title>Phone Bridge 控制端</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; touch-action: manipulation; }
+    body { margin: 0; min-height: 100dvh; background: #080b13; color: #f7f9ff; }
+    main { width: min(100%, 760px); margin: auto; padding: max(18px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); }
+    h1 { margin: 0 0 6px; font-size: 24px; }
+    .sub { margin: 0 0 18px; color: #aab3c8; line-height: 1.45; }
+    .join { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+    input, button { min-height: 48px; border-radius: 13px; border: 1px solid #273047; font: inherit; }
+    input { min-width: 0; background: #111729; color: #fff; padding: 0 14px; letter-spacing: .22em; font-size: 21px; text-align: center; }
+    button { background: #2563eb; color: #fff; padding: 0 18px; font-weight: 650; }
+    button.secondary { background: #171e31; }
+    button:disabled { opacity: .45; }
+    #status { margin: 12px 0; min-height: 24px; color: #9fb6ff; }
+    #screenWrap { position: relative; display: none; width: 100%; min-height: 360px; max-height: 70dvh; background: #000; border-radius: 18px; overflow: hidden; border: 1px solid #20283a; }
+    #screen { display: block; width: 100%; height: 100%; max-height: 70dvh; object-fit: contain; user-select: none; -webkit-user-drag: none; touch-action: none; }
+    .controls { display: none; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+    .security { margin-top: 18px; color: #7f899e; font-size: 13px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Phone Bridge</h1>
+  <p class="sub">输入华为手机上显示的 6 位配对码。首次连接仍需在华为端点击“允许”。</p>
+  <div class="join">
+    <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位配对码">
+    <button id="connect">连接</button>
+  </div>
+  <div id="status" role="status" aria-live="polite">尚未连接</div>
+  <div id="screenWrap"><img id="screen" alt="华为手机屏幕"></div>
+  <div class="controls" id="controls">
+    <button class="secondary" id="back">返回</button>
+    <button class="secondary" id="home">主页</button>
+  </div>
+  <p class="security">网络短暂中断或 Safari 切到后台后，本页面会自动重连。远程控制期间，华为手机会持续显示屏幕共享通知，可随时在华为端停止。</p>
+</main>
+<script>
+  const code = document.querySelector("#code");
+  const connect = document.querySelector("#connect");
+  const status = document.querySelector("#status");
+  const screenWrap = document.querySelector("#screenWrap");
+  const screen = document.querySelector("#screen");
+  const controls = document.querySelector("#controls");
+  let socket;
+  let frameUrl;
+  let startPoint;
+  let retryTimer;
+  let retryCount = 0;
+  let manualClose = false;
+  let activeCode = "";
+  let resumeToken = sessionStorage.getItem("phonebridge.resumeToken") || "";
+
+  function setStatus(text) { status.textContent = text; }
+  function setConnected(connected) {
+    screenWrap.style.display = connected ? "block" : "none";
+    controls.style.display = connected ? "grid" : "none";
+  }
+  function sendControl(value) {
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "control", ...value }));
+    }
+  }
+  function normalizedPoint(event) {
+    const rect = screen.getBoundingClientRect();
+    if (!screen.naturalWidth || !screen.naturalHeight) return null;
+    const imageRatio = screen.naturalWidth / screen.naturalHeight;
+    const boxRatio = rect.width / rect.height;
+    let width = rect.width;
+    let height = rect.height;
+    let left = rect.left;
+    let top = rect.top;
+    if (imageRatio > boxRatio) {
+      height = rect.width / imageRatio;
+      top += (rect.height - height) / 2;
+    } else {
+      width = rect.height * imageRatio;
+      left += (rect.width - width) / 2;
+    }
+    return {
+      x: Math.max(0, Math.min(1, (event.clientX - left) / width)),
+      y: Math.max(0, Math.min(1, (event.clientY - top) / height)),
+      at: performance.now(),
+    };
+  }
+  function clearRetry() {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  function scheduleReconnect() {
+    if (manualClose || !activeCode || retryTimer) return;
+    const delay = Math.min(30_000, 1_000 * (2 ** Math.min(retryCount, 5))) + Math.floor(Math.random() * 500);
+    retryCount += 1;
+    setStatus(`连接中断，${Math.ceil(delay / 1000)} 秒后自动重连…`);
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      openSocket();
+    }, delay);
+  }
+  function openSocket() {
+    clearRetry();
+    const attempt = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws`);
+    socket = attempt;
+    attempt.binaryType = "blob";
+    connect.disabled = true;
+    setStatus(retryCount ? "正在重新连接…" : "正在连接中继…");
+
+    attempt.addEventListener("open", () => {
+      if (socket !== attempt) return;
+      attempt.send(JSON.stringify({ type: "controller", code: activeCode, name: "iPhone", resumeToken }));
+    });
+    attempt.addEventListener("message", (event) => {
+      if (socket !== attempt) return;
+      if (typeof event.data !== "string") {
+        if (frameUrl) URL.revokeObjectURL(frameUrl);
+        frameUrl = URL.createObjectURL(event.data);
+        screen.src = frameUrl;
+        return;
+      }
+      let message;
+      try { message = JSON.parse(event.data); } catch { return; }
+      if (message.type === "join_pending") setStatus("请在华为手机上点击“允许”");
+      if (message.type === "controller_connected") {
+        retryCount = 0;
+        if (message.resumeToken) {
+          resumeToken = message.resumeToken;
+          sessionStorage.setItem("phonebridge.resumeToken", resumeToken);
+        }
+        setStatus(message.resumed ? "已自动恢复连接" : "已连接，可以控制");
+        setConnected(true);
+      }
+      if (message.type === "session_ended") setStatus(`会话已结束：${message.reason || "连接断开"}`);
+      if (message.type === "error") {
+        const labels = {
+          invalid_code: "配对码无效或已过期",
+          host_busy: "华为手机正在被其他设备连接，或等待原会话恢复",
+          rejected: "华为手机拒绝了连接",
+          approval_timeout: "华为手机确认超时，请重新连接",
+          rate_limited: "尝试次数过多，请一分钟后再试",
+        };
+        setStatus(labels[message.code] || `连接失败：${message.code}`);
+        if (["invalid_code", "rejected", "rate_limited"].includes(message.code)) {
+          manualClose = true;
+          resumeToken = "";
+          sessionStorage.removeItem("phonebridge.resumeToken");
+        }
+      }
+    });
+    attempt.addEventListener("close", () => {
+      if (socket !== attempt) return;
+      connect.disabled = false;
+      setConnected(false);
+      scheduleReconnect();
+    });
+    attempt.addEventListener("error", () => {
+      if (socket === attempt) setStatus("网络连接失败，正在准备重试…");
+    });
+  }
+
+  connect.addEventListener("click", () => {
+    const pairingCode = code.value.replace(/\D/g, "").slice(0, 6);
+    if (pairingCode.length !== 6) { setStatus("请输入完整的 6 位配对码"); return; }
+    manualClose = true;
+    clearRetry();
+    socket?.close();
+    if (activeCode !== pairingCode) {
+      resumeToken = "";
+      sessionStorage.removeItem("phonebridge.resumeToken");
+    }
+    activeCode = pairingCode;
+    manualClose = false;
+    retryCount = 0;
+    openSocket();
+  });
+
+  window.addEventListener("online", () => {
+    if (!manualClose && activeCode && socket?.readyState !== WebSocket.OPEN) {
+      clearRetry();
+      openSocket();
+    }
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && !manualClose && activeCode && socket?.readyState !== WebSocket.OPEN) {
+      clearRetry();
+      openSocket();
+    }
+  });
+  code.addEventListener("input", () => { code.value = code.value.replace(/\D/g, "").slice(0, 6); });
+  code.addEventListener("keydown", (event) => { if (event.key === "Enter") connect.click(); });
+  document.querySelector("#back").addEventListener("click", () => sendControl({ action: "back" }));
+  document.querySelector("#home").addEventListener("click", () => sendControl({ action: "home" }));
+  screen.addEventListener("pointerdown", (event) => {
+    startPoint = normalizedPoint(event);
+    if (startPoint) screen.setPointerCapture(event.pointerId);
+  });
+  screen.addEventListener("pointercancel", () => { startPoint = null; });
+  screen.addEventListener("pointerup", (event) => {
+    if (!startPoint) return;
+    const endPoint = normalizedPoint(event);
+    if (!endPoint) { startPoint = null; return; }
+    const distance = Math.hypot(endPoint.x - startPoint.x, endPoint.y - startPoint.y);
+    const durationMs = Math.max(50, Math.min(3000, endPoint.at - startPoint.at));
+    if (distance < 0.018 && durationMs < 500) sendControl({ action: "tap", x: endPoint.x, y: endPoint.y });
+    else sendControl({ action: "swipe", fromX: startPoint.x, fromY: startPoint.y, toX: endPoint.x, toY: endPoint.y, durationMs: Math.round(durationMs) });
+    startPoint = null;
+  });
+</script>
+</body>
+</html>

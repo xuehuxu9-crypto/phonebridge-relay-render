@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: phonebridge-relay
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm ci --omit=dev --ignore-scripts
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: NODE_ENV
+        value: production
+      - key: HEARTBEAT_MS
+        value: 25000
+

@@ -1,0 +1,11 @@
+node_modules/
+.env
+*.log
+*.exe
+*.cmd
+*.ssh-config
+*-known-hosts
+proxy-connect.mjs
+compose.yaml
+deploy/
+

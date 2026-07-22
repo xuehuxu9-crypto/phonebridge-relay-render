@@ -1,0 +1,14 @@
+{
+  "name": "phonebridge-relay",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node test-static.mjs && node test-relay.mjs",
+    "test:public": "node test-public.mjs"
+  },
+  "dependencies": {
+    "ws": "8.21.1"
+  }
+}
